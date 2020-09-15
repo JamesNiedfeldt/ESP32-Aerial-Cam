@@ -1,0 +1,9 @@
+// This file is for settings that should not be shared via git.
+// Copy this file and rename it 'private_settings.h' before editing it. 
+// Do NOT commit 'private_settings.h' to git.
+
+static const char devname[] = "";         // name of your camera for mDNS, Router, and filenames
+
+// EDIT ssid and password
+const char* ssid = "";
+const char* password = "";
