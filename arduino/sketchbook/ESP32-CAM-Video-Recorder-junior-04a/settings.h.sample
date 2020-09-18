@@ -1,0 +1,19 @@
+/* 
+ *  Personal settings moved here. Make sure you have a copy of 'settings.h.sample' named 'settings.h'
+ *  to edit settings there for the program to work. Do not modify or edit 'settings.h.sample'.
+ */
+
+static const char devname[] = "desklens";         // name of your camera for mDNS, Router, and filenames
+
+const char* ssid = "";
+const char* password = "";
+
+// https://sites.google.com/a/usapiens.com/opnode/time-zones  -- find your timezone here
+//#define TIMEZONE "GMT0BST,M3.5.0/01,M10.5.0/02"             // your timezone  -  this is GMT
+#define TIMEZONE "MST7MDT,M3.2.0/2:00:00,M11.1.0/2:00:00"
+
+int  framesize = 7;                //  10 UXGA, 9 SXGA, 7 SVGA, 6 VGA, 5 CIF
+int  quality = 20;                 //  quality on the 1..63 scale  - lower is better quality and bigger files - must be higher than the jpeg_quality in camera_config
+int avi_length = 60;               // how long a movie in seconds
+
+int MagicNumber = 11;                // change this number to reset the epron in your esp32
