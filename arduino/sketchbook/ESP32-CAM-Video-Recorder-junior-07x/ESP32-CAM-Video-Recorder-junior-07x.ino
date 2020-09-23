@@ -4,13 +4,7 @@
 
   This program records an mjpeg avi video to the sd card of an ESP32-CAM.
 
-  v02 - basic version
-  v04 - added wifi, time, stream @ 5 fps, and photos at 1 fps
-      - you need to add your wifi ssid and password below 
-      - if you walk away from your wifi it will fail and continue recording
-      - if you walk back to your wifi -- I think it will not recover until reboot
-  v04a - add some stats to web page, fix streaming with broken pictures
-  
+
   It is the junior version of   https://github.com/jameszah/ESP32-CAM-Video-Recorder
   which has 100 other features of wifi, streaming video, http control, telegram updates, pir control,
   touch control, ftp downloads, .... and other things that make it very big and complex.
@@ -19,10 +13,6 @@
 
   Just set 4 parameters, compile and download, and it will record on power-on, until sd is full, or power-off.
   Then pull out the sd and move it to your computer, and you will see all but the last file avi which died during the unplug.
-
-  Update:  I added some complexity.
-     Connect Pin 12 to GND to stop a video -- no dead videos -- and prevent recording.
-     Release Pin 12 and it will record forever.
 
   Compile Time Parameters
   1.  framesize 10,9,7,6,5 for 10 - UXGA (1600x1200 @ 6 fps), 9 - SXGA (1280x1024 @ 6 fps), 7 - SVGA(800x600 @ 24 fps), 6 - VGA(640x480 @ 24 fps), 5 - CIF(400x296 @ 50 fps)
@@ -35,12 +25,6 @@
   sd card cannot take all that data, then the camera will be idle waiting for the sd.  Lower the framesize (UXGA -> SVGA),
   and lower the quality (10 -> 15 -> 20, higher number is lower quality) to improve framerate to the camera limits.
   If you have a fast enough sd card, it will record at the full speed of the camera.
-
-  Using a Lexar 633x circle10, U3, V30 SD card, with quality set at 20, it will record at full speed of the camera -- in dull indoor light.
-  In bright outdoor light - looking at the sun - it will slow down by half - to about 12 fps SVGA.  You could lower quality to keep that
-  at a higher fps, if you insist on looking at the sun.
-
-  Using a dollarstore SD card - EAGET circle10, U1 - it will record at about half of the camera capacity.
 
   You can look at the blinking red led on the back of the chip to see the recording rate -- sd chips for video are made to be more predictable.
 
@@ -75,19 +59,17 @@
 
   Compiled with Arduino 1.8.12, which used these libraries:
 
-Using library SD_MMC at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\SD_MMC 
-Using library FS at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\FS 
-Using library EEPROM at version 1.0.3 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\EEPROM 
-Using library WiFi at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\WiFi 
-Using library ESPmDNS at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\ESPmDNS 
-Using library HTTPClient at version 1.2 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\HTTPClient 
-Using library WiFiClientSecure at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\WiFiClientSecure 
+  Using library SD_MMC at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\SD_MMC
+  Using library FS at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\FS
+  Using library EEPROM at version 1.0.3 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\EEPROM
+  Using library WiFi at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\WiFi
+  Using library ESPmDNS at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\ESPmDNS
+  Using library HTTPClient at version 1.2 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\HTTPClient
+  Using library WiFiClientSecure at version 1.0 in folder: C:\Users\James\AppData\Local\Arduino15\packages\esp32\hardware\esp32\1.0.4\libraries\WiFiClientSecure
 
 */
 
 #include "settings.h"
-
-static const char vernum[] = "v04a";
 
 float most_recent_fps = 0;
 int most_recent_avg_framesize = 0;
@@ -95,11 +77,13 @@ int most_recent_avg_framesize = 0;
 uint8_t* framebuffer;
 int framebuffer_len;
 
+uint8_t framebuffer_static[33 * 1024];
+int framebuffer_len_static;
+
 //#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
-
 
 // CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM     32
@@ -134,6 +118,24 @@ camera_fb_t * fb_next = NULL;
 
 static esp_err_t cam_err;
 
+int first = 1;
+int frames = 0;
+long frame_start = 0;
+long frame_end = 0;
+long frame_total = 0;
+long frame_average = 0;
+long loop_average = 0;
+long loop_total = 0;
+long total_frame_data = 0;
+long last_frame_length = 0;
+int done = 0;
+long avi_start_time = 0;
+long avi_end_time = 0;
+int stop = 0;
+int we_are_already_stopped = 0;
+long total_delay = 0;
+long bytes_before_last_100_frames = 0;
+long time_before_last_100_frames = 0;
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -225,7 +227,7 @@ const int avi_header[AVIOFFSET] PROGMEM = {
   0x01, 0x00, 0x18, 0x00, 0x4D, 0x4A, 0x50, 0x47, 0x00, 0x84, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49, 0x4E, 0x46, 0x4F,
   0x10, 0x00, 0x00, 0x00, 0x6A, 0x61, 0x6D, 0x65, 0x73, 0x7A, 0x61, 0x68, 0x61, 0x72, 0x79, 0x20,
-  0x76, 0x34, 0x61, 0x20, 0x4C, 0x49, 0x53, 0x54, 0x00, 0x01, 0x0E, 0x00, 0x6D, 0x6F, 0x76, 0x69,
+  0x76, 0x30, 0x37, 0x20, 0x4C, 0x49, 0x53, 0x54, 0x00, 0x01, 0x0E, 0x00, 0x6D, 0x6F, 0x76, 0x69,
 };
 
 
@@ -235,12 +237,10 @@ const int avi_header[AVIOFFSET] PROGMEM = {
 static void inline print_quartet(unsigned long i, FILE * fd)
 {
   uint8_t y[4];
-
   y[0] = i % 0x100;
   y[1] = (i >> 8) % 0x100;
   y[2] = (i >> 16) % 0x100;
   y[3] = (i >> 24) % 0x100;
-
   size_t i1_err = fwrite(y , 1, 4, fd);
 }
 
@@ -250,7 +250,6 @@ static void inline print_quartet(unsigned long i, FILE * fd)
 static void inline print_2quartet(unsigned long i, unsigned long j, FILE * fd)
 {
   uint8_t y[8];
-
   y[0] = i % 0x100;
   y[1] = (i >> 8) % 0x100;
   y[2] = (i >> 16) % 0x100;
@@ -259,7 +258,6 @@ static void inline print_2quartet(unsigned long i, unsigned long j, FILE * fd)
   y[5] = (j >> 8) % 0x100;
   y[6] = (j >> 16) % 0x100;
   y[7] = (j >> 24) % 0x100;
-
   size_t i1_err = fwrite(y , 1, 8, fd);
 }
 
@@ -317,7 +315,7 @@ static esp_err_t config_camera() {
 
   config.pixel_format = PIXFORMAT_JPEG;
 
-  config.frame_size = FRAMESIZE_UXGA; // edit in framesizes below -- this must be better than the framesize specified at the top
+  //config.frame_size = FRAMESIZE_UXGA; // edit in framesizes below -- this must be better than the framesize specified at the top
   /*
       FRAMESIZE_96X96,    // 96x96
       FRAMESIZE_QQVGA,    // 160x120
@@ -329,15 +327,18 @@ static esp_err_t config_camera() {
       FRAMESIZE_HVGA,     // 480x320
       FRAMESIZE_VGA,      // 640x480     6
       FRAMESIZE_SVGA,     // 800x600     7
-      FRAMESIZE_XGA,      // 1024x768    
-      FRAMESIZE_HD,       // 1280x720    
+      FRAMESIZE_XGA,      // 1024x768
+      FRAMESIZE_HD,       // 1280x720
       FRAMESIZE_SXGA,     // 1280x1024   9
       FRAMESIZE_UXGA,     // 1600x1200   10
   */
 
+  config.frame_size = FRAMESIZE_UXGA; // edit in framesizes below
   config.jpeg_quality = 6;  // 1 to 63 - smaller number is higher quality and more data - must be lower rhat the quality parameter at the top
-
   config.fb_count = 7;
+
+  //Serial.printf("Before camera config ...");
+  //Serial.printf("Internal Total heap %d, internal Free Heap %d\n\n", ESP.getHeapSize(), ESP.getFreeHeap());
 
   // camera init
   cam_err = esp_camera_init(&config);
@@ -345,6 +346,8 @@ static esp_err_t config_camera() {
     Serial.printf("Camera init failed with error 0x%x", cam_err);
   }
 
+  //Serial.printf("After camera config ...");
+  //Serial.printf("Internal Total heap %d, internal Free Heap %d\n\n", ESP.getHeapSize(), ESP.getFreeHeap());
 
   sensor_t * ss = esp_camera_sensor_get();
   ss->set_quality(ss, quality);
@@ -353,14 +356,13 @@ static esp_err_t config_camera() {
   ss->set_brightness(ss, 1);  //up the blightness just a bit
   ss->set_saturation(ss, -2); //lower the saturation
 
-  delay(500);
-  for (int j = 0; j < 5; j++) {
+  delay(800);
+  for (int j = 0; j < 4; j++) {
     camera_fb_t * fb = esp_camera_fb_get();
     //Serial.print("Pic, len="); Serial.println(fb->len);
     esp_camera_fb_return(fb);
     delay(50);
   }
-
 }
 
 static esp_err_t init_sdcard()
@@ -514,7 +516,6 @@ void do_eprom_write() {
 // start_avi - open the files and write in headers
 //
 
-
 static esp_err_t start_avi() {
 
   Serial.println("Starting an avi ");
@@ -633,47 +634,84 @@ static esp_err_t start_avi() {
 //  another_save_avi saves another frame to the avi file, uodates index
 //           -- pass in a fb pointer to the frame to add
 //
-//
 
 static esp_err_t another_save_avi(camera_fb_t * fb ) {
 
   int fblen;
   fblen = fb->len;
 
+  int fb_block_length;
+  uint8_t* fb_block_start;
+
   jpeg_size = fblen;
   movi_size += jpeg_size;
   uVideoLen += jpeg_size;
 
+  remnant = (4 - (jpeg_size & 0x00000003)) & 0x00000003;
+
   bw = millis();
+  long frame_write_start = millis();
 
-  size_t dc_err = fwrite(dc_and_zero_buf, 1, 8, avifile);
+  framebuffer_static[3] = 0x63;
+  framebuffer_static[2] = 0x64;
+  framebuffer_static[1] = 0x30;
+  framebuffer_static[0] = 0x30;
+    
+  int jpeg_size_rem = jpeg_size + remnant;
+  
+  framebuffer_static[4] = jpeg_size_rem % 0x100;
+  framebuffer_static[5] = (jpeg_size_rem >> 8) % 0x100;
+  framebuffer_static[6] = (jpeg_size_rem >> 16) % 0x100;
+  framebuffer_static[7] = (jpeg_size_rem >> 24) % 0x100;
 
-  size_t err = fwrite(fb->buf, 1, fb->len, avifile);
-  if (err != fb->len) {
-    Serial.print("Error on avi write: err = "); Serial.print(err);
-    Serial.print(" len = "); Serial.println(fb->len);
+  fb_block_start = fb->buf;
+
+  if (fblen > 32 * 1024 - 8 ) {
+    fb_block_length = 32 * 1024;
+    fblen = fblen - (32 * 1024 - 8);
+    memcpy(framebuffer_static + 8, fb_block_start, fb_block_length - 8);
+    fb_block_start = fb_block_start + fb_block_length - 8;
+
+  } else {
+    fb_block_length = fblen + 8  + remnant;
+    memcpy(framebuffer_static + 8, fb_block_start,  fblen);
+    fblen = 0;
   }
 
-  remnant = (4 - (jpeg_size & 0x00000003)) & 0x00000003;
+  size_t err = fwrite(framebuffer_static, 1, fb_block_length, avifile);
+  if (err != fb_block_length) {
+    Serial.print("Error on avi write: err = "); Serial.print(err);
+    Serial.print(" len = "); Serial.println(fb_block_length);
+  }
+
+  while (fblen > 0) {
+
+    if (fblen > 32 * 1024) {
+      fb_block_length = 32 * 1024;
+      fblen = fblen - fb_block_length;
+    } else {
+      fb_block_length = fblen  + remnant;
+      fblen = 0;
+    }
+
+    memcpy(framebuffer_static, fb_block_start, fb_block_length);
+
+    size_t err = fwrite(framebuffer_static, 1, fb_block_length, avifile);
+    if (err != fb_block_length) {
+      Serial.print("Error on avi write: err = "); Serial.print(err);
+      Serial.print(" len = "); Serial.println(fb_block_length);
+    }
+
+    fb_block_start = fb_block_start + fb_block_length;
+  }
+
+  long frame_write_end = millis();
 
   print_2quartet(idx_offset, jpeg_size, idxfile);
 
   idx_offset = idx_offset + jpeg_size + remnant + 8;
 
-  jpeg_size = jpeg_size + remnant;
   movi_size = movi_size + remnant;
-  if (remnant > 0) {
-    size_t rem_err = fwrite(zero_buf, 1, remnant, avifile);
-  }
-
-  fileposition = ftell (avifile);       // Here, we are at end of chunk (after padding)
-  fseek(avifile, fileposition - jpeg_size - 4, SEEK_SET);    // Here we are the the 4-bytes blank placeholder
-
-  print_quartet(jpeg_size, avifile);    // Overwrite placeholder with actual frame size (without padding)
-
-  fileposition = ftell (avifile);
-
-  fseek(avifile, fileposition + jpeg_size  , SEEK_SET);
 
   totalw = totalw + millis() - bw;
 
@@ -879,7 +917,6 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition", fname);
 
-  //res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
   res = httpd_resp_send(req, (const char *)framebuffer, framebuffer_len);
 
   return res;
@@ -919,6 +956,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
  Filename %s <br>
  Framesize %d, Quality %d, avg framesize %d, fps %.1f <br>
+ Time left in current video %d seconds<br>
  <br>
  <h3><a href="http://%s/">http://%s/</a></h3>
  <h3><a href="http://%s/stream">Stream at 5 fps </a></h3>
@@ -927,8 +965,16 @@ static esp_err_t index_handler(httpd_req_t *req) {
 </body>
 </html>)rawliteral";
 
+
+  int time_left = (- millis() +  (avi_start_time + avi_length * 1000)) / 1000;
+
+  if (stop == 0) {
+    time_left = 0;
+  }
+
   sprintf(the_page, msg, devname, devname, vernum, strdate, use, tot, rssi, fname,
           framesize, quality, most_recent_avg_framesize, most_recent_fps,
+          time_left,
           localip, localip, localip, localip);
 
 
@@ -940,7 +986,6 @@ static esp_err_t index_handler(httpd_req_t *req) {
 //
 //
 static esp_err_t photos_handler(httpd_req_t *req) {
-
 
   Serial.print("http photos, core ");  Serial.print(xPortGetCoreID());
   Serial.print(", priority = "); Serial.println(uxTaskPriorityGet(NULL));
@@ -990,12 +1035,7 @@ document.addEventListener('DOMContentLoaded', function() {
 </body>
 </html>)rawliteral";
 
-  //Serial.print(strlen(msg)); Serial.print(" ");
-
   sprintf(the_page, msg, devname, devname, vernum, strdate );
-
-
-  //Serial.println(strlen(the_page));
 
   httpd_resp_send(req, the_page, strlen(the_page));
   return ESP_OK;
@@ -1004,7 +1044,7 @@ document.addEventListener('DOMContentLoaded', function() {
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 //  Streaming stuff based on Random Nerd
-//   
+//
 //
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -1012,7 +1052,6 @@ document.addEventListener('DOMContentLoaded', function() {
 static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
-
 
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t * fb = NULL;
@@ -1073,9 +1112,6 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  //config.max_uri_handlers = 10;
-
-  //config.task_priority = 1;
 
   Serial.print("http task prio: "); Serial.println(config.task_priority);
 
@@ -1131,7 +1167,6 @@ void setup() {
 
   //Serial.setDebugOutput(true);
 
-  // zzz
   Serial.println("                                    ");
   Serial.println("-------------------------------------");
   Serial.printf("ESP32-CAM-Video-Recorder-junior %s\n", vernum);
@@ -1143,9 +1178,12 @@ void setup() {
   //Serial.printf("Internal Total heap %d, internal Free Heap %d\n", ESP.getHeapSize(), ESP.getFreeHeap());
   //Serial.printf("SPIRam Total heap   %d, SPIRam Free Heap   %d\n", ESP.getPsramSize(), ESP.getFreePsram());
 
-  Serial.println("Starting the wifi ...");
 
-  init_wifi();
+
+  if (IncludeInternet) {
+    Serial.println("Starting the wifi ...");
+    init_wifi();
+  }
 
   Serial.println("Setting up the camera ...");
 
@@ -1176,40 +1214,24 @@ void setup() {
     delay(100);
   }
 
-
   do_eprom_read();
 
-  Serial.println("Start Web ...");
-
-  startCameraServer();
-
-  framebuffer = (uint8_t*)ps_malloc(512 * 1024); // buffer to store a jpg in motion
+  if (IncludeInternet) {
+    Serial.println("Start Web ...");
+    startCameraServer();
+  }
   
+  framebuffer = (uint8_t*)ps_malloc(512 * 1024); // buffer to store a jpg in motion
+
   Serial.println("  End of setup()\n\n");
 
   boot_time = millis();
 }
 
 
-
-int first = 1;
-int frames = 0;
-long frame_start = 0;
-long frame_end = 0;
-long frame_total = 0;
-long frame_average = 0;
-long loop_average = 0;
-long loop_total = 0;
-long total_frame_data = 0;
-long last_frame_length = 0;
-int done = 0;
-long avi_start_time = 0;
-long avi_end_time = 0;
-int stop = 0;
-int we_are_already_stopped = 0;
-long total_delay = 0;
-long bytes_before_last_100_frames = 0;
-long time_before_last_100_frames = 0;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// loop()
 
 void loop() {
   if (first) {
@@ -1227,10 +1249,10 @@ void loop() {
 
     if (stop == 0) {
 
-      if (we_are_already_stopped == 0) Serial.println("\n\nCannot start video, as Pin 12 is connected to GND\n\n");
+      if (we_are_already_stopped == 0) Serial.println("\n\nDisconnect Pin 12 from GND to start recording.\n\n");
       frames--;
       we_are_already_stopped = 1;
-      delay(1000);
+      delay(100);
 
     } else {
       we_are_already_stopped = 0;
@@ -1294,10 +1316,10 @@ void loop() {
       }
       most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0) ;
       most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
-      
+
       Serial.printf("So far: %d frames, in %d ms, for last 100 frames: avg frame size %d, %.2f fps ...\n", frames, millis() - avi_start_time, most_recent_avg_framesize, most_recent_fps);
       total_delay = 0;
-      
+
       bytes_before_last_100_frames = movi_size;
       time_before_last_100_frames = millis();
     }
