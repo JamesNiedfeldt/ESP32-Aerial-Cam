@@ -1116,19 +1116,47 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 //
 static esp_err_t record_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/plain");
-  
-  if (recording_ok == 0) {
-    recording_ok = 1;
-    Serial.println("Recording permitted.");
-    const char resp[] = "Recording begun.";
-    httpd_resp_send(req, resp, strlen(resp));
-    return ESP_OK;
-  } else {
+
+  char content[3]; //Only take first 3 digits
+  size_t recv_size = MIN(req->content_len, sizeof(content));
+  int ret = httpd_req_recv(req, content, recv_size);
+  if (ret <= 0) { //Empty request
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+    } else {
+      const char resp[] = "Bad request - time in seconds needed";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    }
+  }
+
+  int req_length = atoi(content);
+    
+  if (recording_ok != 0) {
     Serial.println("Already recording.");
+    
     const char resp[] = "Already recording. Wait until finished before starting again.";
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
-  }
+      
+  } else if (req_length <= 0) {
+    const char resp[] = "Bad request - seconds must be positive integer";
+    httpd_resp_set_status(req, HTTPD_400);
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_FAIL;
+      
+  } else {
+    Serial.println("Recording permitted.");
+    
+    recording_ok = 1;
+    avi_length = req_length;
+      
+    char resp[50];
+    sprintf(resp, "Recording %d seconds.", avi_length);
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_OK;
+  }  
 }
 
 void startCameraServer() {
