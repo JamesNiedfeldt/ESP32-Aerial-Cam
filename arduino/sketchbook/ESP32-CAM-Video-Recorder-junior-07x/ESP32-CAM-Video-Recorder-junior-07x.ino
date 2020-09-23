@@ -136,6 +136,7 @@ int we_are_already_stopped = 0;
 long total_delay = 0;
 long bytes_before_last_100_frames = 0;
 long time_before_last_100_frames = 0;
+int recording_ok = 0;
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1110,6 +1111,26 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//
+static esp_err_t record_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/plain");
+  
+  if (recording_ok == 0) {
+    recording_ok = 1;
+    Serial.println("Recording permitted.");
+    const char resp[] = "Recording begun.";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_OK;
+  } else {
+    Serial.println("Already recording.");
+    const char resp[] = "Already recording. Wait until finished before starting again.";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_FAIL;
+  }
+}
+
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
@@ -1140,11 +1161,20 @@ void startCameraServer() {
     .handler   = photos_handler,
     .user_ctx  = NULL
   };
+
+  httpd_uri_t record_uri = {
+    .uri       = "/record",
+    .method    = HTTP_POST,
+    .handler   = record_handler,
+    .user_ctx  = NULL
+  };
+  
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &photos_uri);
+    httpd_register_uri_handler(camera_httpd, &record_uri);
   }
 
   Serial.println("Camera http started");
@@ -1240,88 +1270,92 @@ void loop() {
     first = 0;
   }
 
-  frames++;
-  frame_cnt = frames;
+  if (recording_ok) {
 
-  stop = digitalRead(12);
+    frames++;
+    frame_cnt = frames;
 
-  if (frames == 1 ) {                              // start the avi
+    stop = digitalRead(12);
+    
+    if (frames == 1 ) {                              // start the avi
 
-    if (stop == 0) {
+      if (stop == 0) {
 
-      if (we_are_already_stopped == 0) Serial.println("\n\nDisconnect Pin 12 from GND to start recording.\n\n");
-      frames--;
-      we_are_already_stopped = 1;
-      delay(100);
+        if (we_are_already_stopped == 0) Serial.println("\n\nDisconnect Pin 12 from GND to start recording.\n\n");
+        frames--;
+        we_are_already_stopped = 1;
+        delay(100);
 
-    } else {
-      we_are_already_stopped = 0;
+      } else {
+        we_are_already_stopped = 0;
 
-      avi_start_time = millis();
-      Serial.printf("Start the avi ... at %d\n", avi_start_time);
+        avi_start_time = millis();
+        Serial.printf("Start the avi ... at %d\n", avi_start_time);
 
-      fb_curr = get_good_jpeg();                     // should take zero time
+        fb_curr = get_good_jpeg();                     // should take zero time
 
-      start_avi();
+        start_avi();
 
-      fb_next = get_good_jpeg();                    // should take nearly zero time due to time spent writing header
+        fb_next = get_good_jpeg();                    // should take nearly zero time due to time spent writing header
 
-      another_save_avi( fb_curr);                  // put first frame in avi
+        another_save_avi( fb_curr);                  // put first frame in avi
 
-      digitalWrite(33, frames % 2);                // blink
+        digitalWrite(33, frames % 2);                // blink
 
-      esp_camera_fb_return(fb_curr);               // get rid of first frame
+        esp_camera_fb_return(fb_curr);               // get rid of first frame
+        fb_curr = NULL;
+
+      }
+    } else if ( stop == 0 ||  millis() > (avi_start_time + avi_length * 1000)) { // end the avi
+
+      fb_curr = fb_next;
+      fb_next = NULL;
+
+      another_save_avi(fb_curr);                 // save final frame of avi
+      digitalWrite(33, frames % 2);
+      esp_camera_fb_return(fb_curr);
       fb_curr = NULL;
 
-    }
-  } else if ( stop == 0 ||  millis() > (avi_start_time + avi_length * 1000)) { // end the avi
+      end_avi();                                // end the movie
 
-    fb_curr = fb_next;
-    fb_next = NULL;
+      digitalWrite(33, HIGH);          // light off
+      avi_end_time = millis();
 
-    another_save_avi(fb_curr);                 // save final frame of avi
-    digitalWrite(33, frames % 2);
-    esp_camera_fb_return(fb_curr);
-    fb_curr = NULL;
+      float fps = frames / ((avi_end_time - avi_start_time) / 1000) ;
+      Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.1f fps...\n", millis(), frames, avi_end_time, avi_end_time - avi_start_time, fps);
 
-    end_avi();                                // end the movie
+      frames = 0;             // start recording again on the next loop
+      recording_ok = 0;       // Don't allow recording until told to again
 
-    digitalWrite(33, HIGH);          // light off
-    avi_end_time = millis();
-
-    float fps = frames / ((avi_end_time - avi_start_time) / 1000) ;
-    Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.1f fps...\n", millis(), frames, avi_end_time, avi_end_time - avi_start_time, fps);
-
-    frames = 0;             // start recording again on the next loop
-
-  } else {  // another frame of the avi
+    } else {  // another frame of the avi
 
 
-    fb_curr = fb_next;           // we will write a frame, and get the camera preparing a new one
+      fb_curr = fb_next;           // we will write a frame, and get the camera preparing a new one
 
-    fb_next = get_good_jpeg();    // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
+      fb_next = get_good_jpeg();    // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
 
-    another_save_avi(fb_curr);
+      another_save_avi(fb_curr);
 
-    digitalWrite(33, frames % 2);
+      digitalWrite(33, frames % 2);
 
-    esp_camera_fb_return(fb_curr);
-    fb_curr = NULL;
+      esp_camera_fb_return(fb_curr);
+      fb_curr = NULL;
 
-    if (frames % 100 == 0 ) {     // print some status every 100 frames
-      if (frames == 100) {
-        Serial.printf("\n\nframesize %d, quality %d, avi length %d\n\n", framesize, quality, avi_length);
+      if (frames % 100 == 0 ) {     // print some status every 100 frames
+        if (frames == 100) {
+          Serial.printf("\n\nframesize %d, quality %d, avi length %d\n\n", framesize, quality, avi_length);
+          bytes_before_last_100_frames = movi_size;
+          time_before_last_100_frames = millis();
+        }
+        most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0) ;
+        most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
+
+        Serial.printf("So far: %d frames, in %d ms, for last 100 frames: avg frame size %d, %.2f fps ...\n", frames, millis() - avi_start_time, most_recent_avg_framesize, most_recent_fps);
+        total_delay = 0;
+
         bytes_before_last_100_frames = movi_size;
         time_before_last_100_frames = millis();
       }
-      most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0) ;
-      most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
-
-      Serial.printf("So far: %d frames, in %d ms, for last 100 frames: avg frame size %d, %.2f fps ...\n", frames, millis() - avi_start_time, most_recent_avg_framesize, most_recent_fps);
-      total_delay = 0;
-
-      bytes_before_last_100_frames = movi_size;
-      time_before_last_100_frames = millis();
-    }
+    } 
   }
 }
