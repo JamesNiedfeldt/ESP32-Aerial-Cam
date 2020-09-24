@@ -1111,6 +1111,21 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//
+static esp_err_t settings_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/plain");
+  
+  char resp[200];
+  const char msg[] = "Framesize: %d\nQuality: %d\nAVI length: %d";
+
+  sprintf(resp, msg, framesize, quality, avi_length);
+
+  httpd_resp_send(req, resp, strlen(resp));
+  return ESP_OK;
+}
+
 /*
  * PUT METHODS
  */
@@ -1119,6 +1134,41 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 //
 //
 static esp_err_t record_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/plain");
+
+  char content[2];
+  size_t recv_size = MIN(req->content_len, sizeof(content));
+  int ret = httpd_req_recv(req, content, recv_size);
+  if (ret <= 0) { //Empty request
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+      return ESP_FAIL;
+    }
+  }
+    
+  if (recording_ok != 0) {
+    Serial.println("Already recording.");
+    
+    const char resp[] = "Already recording. Wait until finished before starting again.";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_FAIL;
+      
+  } else {
+    recording_ok = 1;
+
+    Serial.println("Recording permitted.");
+      
+    char resp[50];
+    sprintf(resp, "Recording %d seconds.", avi_length);
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_OK;
+  }  
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//
+static esp_err_t avilength_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/plain");
 
   char content[3]; //Only take first 3 digits
@@ -1131,35 +1181,36 @@ static esp_err_t record_handler(httpd_req_t *req) {
       const char resp[] = "Bad request - time in seconds needed";
       httpd_resp_set_status(req, HTTPD_400);
       httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
     }
+    return ESP_FAIL;
   }
 
   int req_length = atoi(content);
     
   if (recording_ok != 0) {
-    Serial.println("Already recording.");
+    Serial.println("Editing avi_length not permitted while recording.");
     
-    const char resp[] = "Already recording. Wait until finished before starting again.";
+    const char resp[] = "Already recording. Wait until finished before changing AVI length.";
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
-  } else if (req_length <= 0) {
-    const char resp[] = "Bad request - seconds must be positive integer";
-    httpd_resp_set_status(req, HTTPD_400);
-    httpd_resp_send(req, resp, strlen(resp));
-    return ESP_FAIL;
-      
-  } else {
-    recording_ok = 1;
-    avi_length = req_length;
+  } else { 
+    if (req_length <= 0) {
+      const char resp[] = "Bad request - seconds must be positive integer";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    
+    } else {
+      avi_length = req_length;
 
-    Serial.println("Recording permitted.");
+      Serial.print("avi_length set to "); Serial.println(framesize);
       
-    char resp[50];
-    sprintf(resp, "Recording %d seconds.", avi_length);
-    httpd_resp_send(req, resp, strlen(resp));
-    return ESP_OK;
+      char resp[50];
+      sprintf(resp, "AVI length set to %d.", avi_length);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_OK;
+    }
   }  
 }
 
@@ -1179,8 +1230,8 @@ static esp_err_t framesize_handler(httpd_req_t *req) {
       const char resp[] = "Bad request - framesize needed";
       httpd_resp_set_status(req, HTTPD_400);
       httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
     }
+    return ESP_FAIL;
   }
 
   int req_size = atoi(content);
@@ -1199,7 +1250,7 @@ static esp_err_t framesize_handler(httpd_req_t *req) {
       sensor_t * ss = esp_camera_sensor_get();
       ss->set_framesize(ss, (framesize_t)framesize); 
         
-      Serial.print("Framesize set to "); Serial.println(framesize);  
+      Serial.print("framesize set to "); Serial.println(framesize);  
       char resp[50];
       sprintf(resp, "Framesize set to %d.", framesize);
       httpd_resp_send(req, resp, strlen(resp));
@@ -1229,8 +1280,8 @@ static esp_err_t quality_handler(httpd_req_t *req) {
       const char resp[] = "Bad request - quality needed";
       httpd_resp_set_status(req, HTTPD_400);
       httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
     }
+    return ESP_FAIL;
   }
 
   int req_quality = atoi(content);
@@ -1248,7 +1299,7 @@ static esp_err_t quality_handler(httpd_req_t *req) {
       sensor_t * ss = esp_camera_sensor_get();
       ss->set_quality(ss, quality); 
         
-      Serial.print("Quality set to "); Serial.println(quality);  
+      Serial.print("quality set to "); Serial.println(quality);  
       char resp[50];
       sprintf(resp, "Quality set to %d.", quality);
       httpd_resp_send(req, resp, strlen(resp));
@@ -1266,6 +1317,8 @@ void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
   Serial.print("http task prio: "); Serial.println(config.task_priority);
+
+  //GET methods
 
   httpd_uri_t index_uri = {
     .uri       = "/",
@@ -1293,10 +1346,26 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
+  httpd_uri_t settings_uri = {
+    .uri       = "/settings",
+    .method    = HTTP_GET,
+    .handler   = settings_handler,
+    .user_ctx  = NULL
+  };
+
+  //PUT methods
+
   httpd_uri_t record_uri = {
     .uri       = "/record",
     .method    = HTTP_PUT,
     .handler   = record_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t avilength_uri = {
+    .uri       = "/avilength",
+    .method    = HTTP_PUT,
+    .handler   = avilength_handler,
     .user_ctx  = NULL
   };
 
@@ -1315,11 +1384,18 @@ void startCameraServer() {
   };
   
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
-    httpd_register_uri_handler(camera_httpd, &index_uri);
+    /* TODO
+     * There seems to be an 8-handler cap so for now the
+     * index handler is disabled until I can find a solution
+     */  
+    //httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &photos_uri);
+    httpd_register_uri_handler(camera_httpd, &settings_uri);
+    
     httpd_register_uri_handler(camera_httpd, &record_uri);
+    httpd_register_uri_handler(camera_httpd, &avilength_uri);
     httpd_register_uri_handler(camera_httpd, &framesize_uri);
     httpd_register_uri_handler(camera_httpd, &quality_uri);
   }
