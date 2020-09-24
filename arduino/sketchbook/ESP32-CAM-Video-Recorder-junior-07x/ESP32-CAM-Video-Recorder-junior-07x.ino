@@ -335,7 +335,7 @@ static esp_err_t config_camera() {
   */
 
   config.frame_size = FRAMESIZE_UXGA; // edit in framesizes below
-  config.jpeg_quality = 6;  // 1 to 63 - smaller number is higher quality and more data - must be lower rhat the quality parameter at the top
+  config.jpeg_quality = 10;  // 10 to 63 - smaller number is higher quality and more data - must be lower rhat the quality parameter at the top
   config.fb_count = 7;
 
   //Serial.printf("Before camera config ...");
@@ -1176,7 +1176,7 @@ static esp_err_t framesize_handler(httpd_req_t *req) {
     if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
       httpd_resp_send_408(req);
     } else {
-      const char resp[] = "Bad request - time in seconds needed";
+      const char resp[] = "Bad request - framesize needed";
       httpd_resp_set_status(req, HTTPD_400);
       httpd_resp_send(req, resp, strlen(resp));
       return ESP_FAIL;
@@ -1206,6 +1206,55 @@ static esp_err_t framesize_handler(httpd_req_t *req) {
       return ESP_OK; 
     } else {
       const char resp[] = "Bad request - invalid framesize";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    }  
+  }  
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//
+static esp_err_t quality_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/plain");
+
+  char content[2]; //Only take first 2 digits
+  size_t recv_size = MIN(req->content_len, sizeof(content));
+  int ret = httpd_req_recv(req, content, recv_size);
+  if (ret <= 0) { //Empty request
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+    } else {
+      const char resp[] = "Bad request - quality needed";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    }
+  }
+
+  int req_quality = atoi(content);
+    
+  if (recording_ok != 0) {
+    Serial.println("Editing quality not permitted while recording.");
+    
+    const char resp[] = "Currently recording. Wait until finished before setting quality.";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_FAIL;
+      
+  } else {
+    if (req_quality > 10 && req_quality < 64) {
+      quality = req_quality;
+      sensor_t * ss = esp_camera_sensor_get();
+      ss->set_quality(ss, quality); 
+        
+      Serial.print("Quality set to "); Serial.println(quality);  
+      char resp[50];
+      sprintf(resp, "Quality set to %d.", quality);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_OK; 
+    } else {
+      const char resp[] = "Bad request - invalid quality";
       httpd_resp_set_status(req, HTTPD_400);
       httpd_resp_send(req, resp, strlen(resp));
       return ESP_FAIL;
@@ -1257,6 +1306,13 @@ void startCameraServer() {
     .handler   = framesize_handler,
     .user_ctx  = NULL
   };
+
+  httpd_uri_t quality_uri = {
+    .uri       = "/quality",
+    .method    = HTTP_PUT,
+    .handler   = quality_handler,
+    .user_ctx  = NULL
+  };
   
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
@@ -1265,6 +1321,7 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &photos_uri);
     httpd_register_uri_handler(camera_httpd, &record_uri);
     httpd_register_uri_handler(camera_httpd, &framesize_uri);
+    httpd_register_uri_handler(camera_httpd, &quality_uri);
   }
 
   Serial.println("Camera http started");
