@@ -1111,6 +1111,10 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+/*
+ * PUT METHODS
+ */
+
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 //
@@ -1147,15 +1151,65 @@ static esp_err_t record_handler(httpd_req_t *req) {
     return ESP_FAIL;
       
   } else {
-    Serial.println("Recording permitted.");
-    
     recording_ok = 1;
     avi_length = req_length;
+
+    Serial.println("Recording permitted.");
       
     char resp[50];
     sprintf(resp, "Recording %d seconds.", avi_length);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_OK;
+  }  
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//
+static esp_err_t framesize_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/plain");
+
+  char content[2]; //Only take first 2 digits
+  size_t recv_size = MIN(req->content_len, sizeof(content));
+  int ret = httpd_req_recv(req, content, recv_size);
+  if (ret <= 0) { //Empty request
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+    } else {
+      const char resp[] = "Bad request - time in seconds needed";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    }
+  }
+
+  int req_size = atoi(content);
+    
+  if (recording_ok != 0) {
+    Serial.println("Editing framesize not permitted while recording.");
+    
+    const char resp[] = "Currently recording. Wait until finished before setting framesize.";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_FAIL;
+      
+  } else {
+    if (req_size == 10 || req_size == 9 || req_size == 7 
+        || req_size == 6 || req_size == 5) {
+      framesize = req_size;
+      sensor_t * ss = esp_camera_sensor_get();
+      ss->set_framesize(ss, (framesize_t)framesize); 
+        
+      Serial.print("Framesize set to "); Serial.println(framesize);  
+      char resp[50];
+      sprintf(resp, "Framesize set to %d.", framesize);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_OK; 
+    } else {
+      const char resp[] = "Bad request - invalid framesize";
+      httpd_resp_set_status(req, HTTPD_400);
+      httpd_resp_send(req, resp, strlen(resp));
+      return ESP_FAIL;
+    }  
   }  
 }
 
@@ -1192,8 +1246,15 @@ void startCameraServer() {
 
   httpd_uri_t record_uri = {
     .uri       = "/record",
-    .method    = HTTP_POST,
+    .method    = HTTP_PUT,
     .handler   = record_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t framesize_uri = {
+    .uri       = "/framesize",
+    .method    = HTTP_PUT,
+    .handler   = framesize_handler,
     .user_ctx  = NULL
   };
   
@@ -1203,6 +1264,7 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &photos_uri);
     httpd_register_uri_handler(camera_httpd, &record_uri);
+    httpd_register_uri_handler(camera_httpd, &framesize_uri);
   }
 
   Serial.println("Camera http started");
