@@ -945,25 +945,61 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
   const char msg[] PROGMEM = R"rawliteral(<!doctype html>
 <html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>%s ESP32-CAM Video Recorder Junior</title>
-</head>
-<body>
-<h1>%s<br>ESP32-CAM Video Recorder Junior %s <br><font color="red">%s</font></h1><br>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>%s ESP32-CAM Video Recorder Junior</title>
+  </head>
+  <body>
+    <h1>%s<br>ESP32-CAM Video Recorder Junior %s<br><font color="red">%s</font></h1>
+    Used / Total SD Space <font color="red"> %d MB / %d MB</font>, Rssi %d<br>
 
- Used / Total SD Space <font color="red"> %d MB / %d MB</font>, Rssi %d<br>
+    Filename %s <br>
+    Framesize %d, Quality %d, Avi length %d<br>
+    avg framesize %d, fps %.1f <br>
+    Time left in current video %d seconds<br>
+    <br>
+    <h3><a href="http://%s/">Refresh</a></h3>
+    <h3><a href="http://%s/stream">Stream at 5 fps</a></h3>
+    <h3><a href="http://%s/photos">Photos - 15 saveable photos @ 1 fps</a></h3>
+    <br>
+    <input type="number" id="framesize" name="framesize" min="5" max="10">
+    <button onclick="setval('framesize')">Set framesize</button><br>
+    <input type="number" id="quality" name="quality" min="11" max="63">
+    <button onclick="setval('quality')">Set quality</button><br>
+    <input type="number" id="avilength" name="framesize" min="1" max="300">
+    <button onclick="setval('avilength')">Set avi length</button><br>
+    <button onclick="record()">Record</button>
+    <p id="status"></p>
+  </body>
 
- Filename %s <br>
- Framesize %d, Quality %d, avg framesize %d, fps %.1f <br>
- Time left in current video %d seconds<br>
- <br>
- <h3><a href="http://%s/">http://%s/</a></h3>
- <h3><a href="http://%s/stream">Stream at 5 fps </a></h3>
- <h3><a href="http://%s/photos">Photos - 15 saveable photos @ 1 fps </a></h3>
+  <script>
+    function setval(param) {
+      const Http = new XMLHttpRequest();
+      Http.open("PUT", "http://%s/" + param);
+      Http.send(document.getElementById(param).value);
+      document.getElementById("status").innerHTML = "Sending request...";
 
-</body>
+      Http.onreadystatechange=(e)=>{
+        if (Http.status != 200) {
+          document.getElementById("status").innerHTML = Http.responseText;
+        } else {
+          document.getElementById("status").innerHTML = "Request successful. Reloading page...";
+          location.reload();
+        }
+      }
+    }
+
+    function record() {
+      const Http = new XMLHttpRequest();
+      Http.open("PUT", "http://%s/record");
+      Http.send();
+
+      Http.onreadystatechange=(e)=>{
+        document.getElementById("status").innerHTML = Http.responseText;
+      }
+    }
+  </script>
 </html>)rawliteral";
 
 
@@ -974,9 +1010,9 @@ static esp_err_t index_handler(httpd_req_t *req) {
   }
 
   sprintf(the_page, msg, devname, devname, vernum, strdate, use, tot, rssi, fname,
-          framesize, quality, most_recent_avg_framesize, most_recent_fps,
+          framesize, quality, avi_length, most_recent_avg_framesize, most_recent_fps,
           time_left,
-          localip, localip, localip, localip);
+          localip, localip, localip, localip, localip);
 
 
   httpd_resp_send(req, the_page, strlen(the_page));
@@ -1150,6 +1186,7 @@ static esp_err_t record_handler(httpd_req_t *req) {
     Serial.println("Already recording.");
     
     const char resp[] = "Already recording. Wait until finished before starting again.";
+    httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
@@ -1191,6 +1228,7 @@ static esp_err_t avilength_handler(httpd_req_t *req) {
     Serial.println("Editing avi_length not permitted while recording.");
     
     const char resp[] = "Already recording. Wait until finished before changing AVI length.";
+    httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
@@ -1240,6 +1278,7 @@ static esp_err_t framesize_handler(httpd_req_t *req) {
     Serial.println("Editing framesize not permitted while recording.");
     
     const char resp[] = "Currently recording. Wait until finished before setting framesize.";
+    httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
@@ -1290,6 +1329,7 @@ static esp_err_t quality_handler(httpd_req_t *req) {
     Serial.println("Editing quality not permitted while recording.");
     
     const char resp[] = "Currently recording. Wait until finished before setting quality.";
+    httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
@@ -1388,11 +1428,11 @@ void startCameraServer() {
      * There seems to be an 8-handler cap so for now the
      * index handler is disabled until I can find a solution
      */  
-    //httpd_register_uri_handler(camera_httpd, &index_uri);
+    httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &photos_uri);
-    httpd_register_uri_handler(camera_httpd, &settings_uri);
+    //httpd_register_uri_handler(camera_httpd, &settings_uri);
     
     httpd_register_uri_handler(camera_httpd, &record_uri);
     httpd_register_uri_handler(camera_httpd, &avilength_uri);
