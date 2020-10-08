@@ -1473,10 +1473,8 @@ void setup() {
 
 
 
-  if (IncludeInternet) {
-    Serial.println("Starting the wifi ...");
-    init_wifi();
-  }
+  Serial.println("Starting the wifi ...");
+  init_wifi();
 
   Serial.println("Setting up the camera ...");
 
@@ -1509,10 +1507,8 @@ void setup() {
 
   do_eprom_read();
 
-  if (IncludeInternet) {
-    Serial.println("Start Web ...");
-    startCameraServer();
-  }
+  Serial.println("Start Web ...");
+  startCameraServer();
   
   framebuffer = (uint8_t*)ps_malloc(512 * 1024); // buffer to store a jpg in motion
 
