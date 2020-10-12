@@ -867,11 +867,20 @@ bool init_wifi() {
   WiFiManager wifiManager;
   uint32_t brown_reg_temp = READ_PERI_REG(RTC_CNTL_BROWN_OUT_REG);
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  const char* menu[] = {
+    "wifinoscan",
+    "exit"
+  };
+  WiFiManagerParameter custom_text(R"rawliteral(
+  <p>Enter the SSID and password of the network you want the camera to connect to.
+  If you are using a mobile hotspot and need to turn it on, reset the camera after doing so.</p>
+  )rawliteral");
 
   wifiManager.setConfigPortalTimeout(180);
-  //wifiManager.setRestorePersistent(true);
+  wifiManager.setMenu(menu, sizeof(menu));
+  wifiManager.addParameter(&custom_text);
   
-  if (!wifiManager.autoConnect()) {
+  if (!wifiManager.autoConnect(devname)) {
     Serial.println("Failed to connect and hit timeout");
     major_fail();
   }
