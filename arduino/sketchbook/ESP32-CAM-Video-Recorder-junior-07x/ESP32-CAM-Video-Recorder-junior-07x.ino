@@ -869,7 +869,9 @@ bool init_wifi() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
   wifiManager.setConfigPortalTimeout(180);
-  if (!wifiManager.startConfigPortal("AerialCamSetup")) {
+  //wifiManager.setRestorePersistent(true);
+  
+  if (!wifiManager.autoConnect()) {
     Serial.println("Failed to connect and hit timeout");
     major_fail();
   }
