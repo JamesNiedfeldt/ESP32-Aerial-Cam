@@ -69,7 +69,18 @@
 
 */
 
-#include "settings.h"
+static const char vernum[] = "v07";
+static const char devname[] = "desklens";         // name of your camera for mDNS, Router, and filenames
+
+// https://sites.google.com/a/usapiens.com/opnode/time-zones  -- find your timezone here
+#define TIMEZONE "GMT0BST,M3.5.0/01,M10.5.0/02"             // your timezone  -  this is GMT
+
+// svga, quality 10, 5 minute video then restart, .. and realtime fast as the camera and disk will allow
+int  framesize = 7;                //  10 UXGA, 9 SXGA, 7 SVGA, 6 VGA, 5 CIF
+int  quality = 11;                 //  quality on the 1..63 scale  - lower is better quality and bigger files - must be higher than the jpeg_quality in camera_config
+int avi_length = 10;               // how long a movie in seconds -- 300 = 5 minutes
+
+int MagicNumber = 14;                // change this number to reset the eprom in your esp32 for file numbers
 
 float most_recent_fps = 0;
 int most_recent_avg_framesize = 0;
@@ -82,8 +93,27 @@ int framebuffer_len_static;
 
 //#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
-#include "esp_http_server.h"
 #include "esp_camera.h"
+
+// Workaround necessary to prevent naming collisions between
+// esp_http_server.h and WiFiManager.h
+#define HTTP_GET HTTP_GET_REQ
+#define HTTP_POST HTTP_POST_REQ
+#define HTTP_DELETE HTTP_DELETE_REQ
+#define HTTP_PUT HTTP_PUT_REQ
+#define HTTP_PATCH HTTP_PATCH_REQ
+#define HTTP_HEAD HTTP_HEAD_REQ
+#define HTTP_OPTIONS HTTP_OPTIONS_REQ
+
+#include "esp_http_server.h"
+
+#undef HTTP_GET
+#undef HTTP_POST
+#undef HTTP_DELETE
+#undef HTTP_PUT
+#undef HTTP_PATCH
+#undef HTTP_HEAD
+#undef HTTP_OPTIONS
 
 // CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM     32
@@ -827,12 +857,64 @@ static esp_err_t end_avi() {
 #include "time.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <WiFiManager.h>
 
 time_t now;
 struct tm timeinfo;
 char localip[20];
 
-bool init_wifi()
+bool init_wifi() {
+  WiFiManager wifiManager;
+  uint32_t brown_reg_temp = READ_PERI_REG(RTC_CNTL_BROWN_OUT_REG);
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  const char* menu[] = {
+    "wifinoscan",
+    "exit"
+  };
+  WiFiManagerParameter custom_text(R"rawliteral(
+  <p>Enter the SSID and password of the network you want the camera to connect to.
+  If you are using a mobile hotspot and need to turn it on, reset the camera after doing so.</p>
+  )rawliteral");
+
+  wifiManager.setConfigPortalTimeout(180);
+  wifiManager.setMenu(menu, sizeof(menu));
+  wifiManager.addParameter(&custom_text);
+  
+  if (!wifiManager.autoConnect(devname)) {
+    Serial.println("Failed to connect and hit timeout");
+    major_fail();
+  }
+  Serial.println("Successfully connected");
+
+    if (!MDNS.begin(devname)) {
+    Serial.println("Error setting up MDNS responder!");
+  } else {
+    Serial.printf("mDNS responder started '%s'\n", devname);
+  }
+
+  configTime(0, 0, "pool.ntp.org");
+
+  setenv("TZ", TIMEZONE, 1);  // mountain time zone from #define at top
+  tzset();
+
+  time(&now);
+
+  while (now < 10) {        // try for 5 seconds to get the time, then give up - 10 seconds after boot
+    delay(1000);
+    Serial.print("o");
+    time(&now);
+  }
+
+  Serial.print("Local time: "); Serial.print(ctime(&now));
+  sprintf(localip, "%s", WiFi.localIP().toString().c_str());
+  Serial.print("IP: "); Serial.println(localip); Serial.println(" ");
+
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, brown_reg_temp);
+  
+  return true;
+}
+
+/*bool init_wifi()
 {
   int connAttempts = 0;
 
@@ -880,7 +962,7 @@ bool init_wifi()
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, brown_reg_temp);
   return true;
 
-}
+}*/
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
@@ -1362,33 +1444,33 @@ void startCameraServer() {
 
   httpd_uri_t index_uri = {
     .uri       = "/",
-    .method    = HTTP_GET,
+    .method    = HTTP_GET_REQ,
     .handler   = index_handler,
     .user_ctx  = NULL
   };
   httpd_uri_t capture_uri = {
     .uri       = "/capture",
-    .method    = HTTP_GET,
+    .method    = HTTP_GET_REQ,
     .handler   = capture_handler,
     .user_ctx  = NULL
   };
   httpd_uri_t stream_uri = {
     .uri       = "/stream",
-    .method    = HTTP_GET,
+    .method    = HTTP_GET_REQ,
     .handler   = stream_handler,
     .user_ctx  = NULL
   };
 
   httpd_uri_t photos_uri = {
     .uri       = "/photos",
-    .method    = HTTP_GET,
+    .method    = HTTP_GET_REQ,
     .handler   = photos_handler,
     .user_ctx  = NULL
   };
 
   httpd_uri_t settings_uri = {
     .uri       = "/settings",
-    .method    = HTTP_GET,
+    .method    = HTTP_GET_REQ,
     .handler   = settings_handler,
     .user_ctx  = NULL
   };
@@ -1397,28 +1479,28 @@ void startCameraServer() {
 
   httpd_uri_t record_uri = {
     .uri       = "/record",
-    .method    = HTTP_PUT,
+    .method    = HTTP_PUT_REQ,
     .handler   = record_handler,
     .user_ctx  = NULL
   };
 
   httpd_uri_t avilength_uri = {
     .uri       = "/avilength",
-    .method    = HTTP_PUT,
+    .method    = HTTP_PUT_REQ,
     .handler   = avilength_handler,
     .user_ctx  = NULL
   };
 
   httpd_uri_t framesize_uri = {
     .uri       = "/framesize",
-    .method    = HTTP_PUT,
+    .method    = HTTP_PUT_REQ,
     .handler   = framesize_handler,
     .user_ctx  = NULL
   };
 
   httpd_uri_t quality_uri = {
     .uri       = "/quality",
-    .method    = HTTP_PUT,
+    .method    = HTTP_PUT_REQ,
     .handler   = quality_handler,
     .user_ctx  = NULL
   };
@@ -1473,10 +1555,8 @@ void setup() {
 
 
 
-  if (IncludeInternet) {
-    Serial.println("Starting the wifi ...");
-    init_wifi();
-  }
+  Serial.println("Starting the wifi ...");
+  init_wifi();
 
   Serial.println("Setting up the camera ...");
 
@@ -1509,10 +1589,8 @@ void setup() {
 
   do_eprom_read();
 
-  if (IncludeInternet) {
-    Serial.println("Start Web ...");
-    startCameraServer();
-  }
+  Serial.println("Start Web ...");
+  startCameraServer();
   
   framebuffer = (uint8_t*)ps_malloc(512 * 1024); // buffer to store a jpg in motion
 
