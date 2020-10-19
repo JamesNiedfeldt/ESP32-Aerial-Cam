@@ -70,7 +70,7 @@
 */
 
 static const char vernum[] = "v07";
-static const char devname[] = "desklens";         // name of your camera for mDNS, Router, and filenames
+static const char devname[] = "FotoFlyer";         // name of your camera for mDNS, Router, and filenames
 
 // https://sites.google.com/a/usapiens.com/opnode/time-zones  -- find your timezone here
 #define TIMEZONE "GMT0BST,M3.5.0/01,M10.5.0/02"             // your timezone  -  this is GMT
@@ -873,20 +873,23 @@ bool init_wifi() {
   };
   WiFiManagerParameter custom_text(R"rawliteral(
   <p>Enter the SSID and password of the network you want the camera to connect to.
-  If you are using a mobile hotspot and need to turn it on, reset the camera after doing so.</p>
+  The camera will attempt to connect to this network when it boots up next.</p>
   )rawliteral");
 
   wifiManager.setConfigPortalTimeout(180);
   wifiManager.setMenu(menu, sizeof(menu));
   wifiManager.addParameter(&custom_text);
-  
-  if (!wifiManager.autoConnect(devname)) {
+
+  char apName[15]; 
+  strcpy(apName, devname);
+  strcat(apName, " Setup");
+  if (!wifiManager.autoConnect(apName)) {
     Serial.println("Failed to connect and hit timeout");
     major_fail();
   }
   Serial.println("Successfully connected");
 
-    if (!MDNS.begin(devname)) {
+  if (!MDNS.begin(devname)) {
     Serial.println("Error setting up MDNS responder!");
   } else {
     Serial.printf("mDNS responder started '%s'\n", devname);
@@ -913,56 +916,6 @@ bool init_wifi() {
   
   return true;
 }
-
-/*bool init_wifi()
-{
-  int connAttempts = 0;
-
-  uint32_t brown_reg_temp = READ_PERI_REG(RTC_CNTL_BROWN_OUT_REG);
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-
-
-  WiFi.disconnect(true, true);
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname(devname);
-
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED ) {
-    delay(1000);
-    Serial.print(".");
-    if (connAttempts++ == 5) break;     // try for 5 seconds to get internet, then give up
-  }
-
-  Serial.printf("\nInternet status: %d\n", WiFi.status());
-
-  if (!MDNS.begin(devname)) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.printf("mDNS responder started '%s'\n", devname);
-  }
-
-  configTime(0, 0, "pool.ntp.org");
-
-  setenv("TZ", TIMEZONE, 1);  // mountain time zone from #define at top
-  tzset();
-
-  time(&now);
-
-  while (now < 10) {        // try for 5 seconds to get the time, then give up - 10 seconds after boot
-    delay(1000);
-    Serial.print("o");
-    time(&now);
-  }
-
-  Serial.print("Local time: "); Serial.print(ctime(&now));
-  sprintf(localip, "%s", WiFi.localIP().toString().c_str());
-  Serial.print("IP: "); Serial.println(localip); Serial.println(" ");
-
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, brown_reg_temp);
-  return true;
-
-}*/
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
@@ -1287,152 +1240,97 @@ static esp_err_t record_handler(httpd_req_t *req) {
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 //
-static esp_err_t avilength_handler(httpd_req_t *req) {
+static esp_err_t config_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/plain");
-
-  char content[3]; //Only take first 3 digits
-  size_t recv_size = MIN(req->content_len, sizeof(content));
-  int ret = httpd_req_recv(req, content, recv_size);
-  if (ret <= 0) { //Empty request
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    } else {
-      const char resp[] = "Bad request - time in seconds needed";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
-    }
-    return ESP_FAIL;
+  
+  int buffsize = 0;
+  if (httpd_req_get_url_query_len(req) > 0) {
+    buffsize = httpd_req_get_url_query_len(req) + 1;
   }
+  char query[buffsize];
+  char req_avilength[5];
+  char req_framesize[5];
+  char req_quality[5];
+  int parsed_val;
+  char resp[200] = "";
 
-  int req_length = atoi(content);
-    
-  if (recording_ok != 0) {
-    Serial.println("Editing avi_length not permitted while recording.");
-    
-    const char resp[] = "Already recording. Wait until finished before changing AVI length.";
+  //No query
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+    strcat(resp, "No query was found.");
     httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
-      
-  } else { 
-    if (req_length <= 0) {
-      const char resp[] = "Bad request - seconds must be positive integer";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
-    
-    } else {
-      avi_length = req_length;
-
-      Serial.print("avi_length set to "); Serial.println(framesize);
-      
-      char resp[50];
-      sprintf(resp, "AVI length set to %d.", avi_length);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_OK;
-    }
-  }  
-}
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//
-static esp_err_t framesize_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/plain");
-
-  char content[2]; //Only take first 2 digits
-  size_t recv_size = MIN(req->content_len, sizeof(content));
-  int ret = httpd_req_recv(req, content, recv_size);
-  if (ret <= 0) { //Empty request
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    } else {
-      const char resp[] = "Bad request - framesize needed";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
-    }
-    return ESP_FAIL;
   }
 
-  int req_size = atoi(content);
+  //Currently recording, can't process changes
+  if (recording_ok != 0) { 
+    Serial.println("Configuring settings not permitted while recording.");
     
-  if (recording_ok != 0) {
-    Serial.println("Editing framesize not permitted while recording.");
-    
-    const char resp[] = "Currently recording. Wait until finished before setting framesize.";
+    strcat(resp, "Already recording. Wait until finished before modifying settings.");
     httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
-      
-  } else {
-    if (req_size == 10 || req_size == 9 || req_size == 7 
-        || req_size == 6 || req_size == 5) {
-      framesize = req_size;
-      sensor_t * ss = esp_camera_sensor_get();
-      ss->set_framesize(ss, (framesize_t)framesize); 
+  }
+
+  //Check avilength query
+  if (httpd_query_key_value(query, "avilength", req_avilength, sizeof(req_avilength)) == ESP_OK) {
+    parsed_val = atoi(req_avilength);
+
+    if (parsed_val >= 1 && parsed_val <= 300) {
+      avi_length = parsed_val;
         
-      Serial.print("framesize set to "); Serial.println(framesize);  
-      char resp[50];
-      sprintf(resp, "Framesize set to %d.", framesize);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_OK; 
+      Serial.print("avi_length set to "); Serial.println(avi_length);
+      char msg[30];
+      sprintf(msg, "AVI length set to %d.\n", avi_length); 
+      strcat(resp, msg);
     } else {
-      const char resp[] = "Bad request - invalid framesize";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
-    }  
-  }  
-}
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//
-static esp_err_t quality_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/plain");
-
-  char content[2]; //Only take first 2 digits
-  size_t recv_size = MIN(req->content_len, sizeof(content));
-  int ret = httpd_req_recv(req, content, recv_size);
-  if (ret <= 0) { //Empty request
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    } else {
-      const char resp[] = "Bad request - quality needed";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
+      strcat(resp, "Invalid AVI length.\n");
     }
-    return ESP_FAIL;
   }
 
-  int req_quality = atoi(content);
-    
-  if (recording_ok != 0) {
-    Serial.println("Editing quality not permitted while recording.");
-    
-    const char resp[] = "Currently recording. Wait until finished before setting quality.";
-    httpd_resp_set_status(req, HTTPD_400);
-    httpd_resp_send(req, resp, strlen(resp));
-    return ESP_FAIL;
-      
-  } else {
-    if (req_quality > 10 && req_quality < 64) {
-      quality = req_quality;
-      sensor_t * ss = esp_camera_sensor_get();
-      ss->set_quality(ss, quality); 
+  //Check framesize query
+  if (httpd_query_key_value(query, "framesize", req_framesize, sizeof(req_framesize)) == ESP_OK) {
+    if (req_framesize != "") {
+      parsed_val = atoi(req_framesize);
+
+      if (parsed_val == 10 || parsed_val == 9 || parsed_val == 7 
+          || parsed_val == 6 || parsed_val == 5) {
+        framesize = parsed_val;
+        sensor_t * ss = esp_camera_sensor_get();
+        ss->set_framesize(ss, (framesize_t)framesize); 
         
-      Serial.print("quality set to "); Serial.println(quality);  
-      char resp[50];
-      sprintf(resp, "Quality set to %d.", quality);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_OK; 
-    } else {
-      const char resp[] = "Bad request - invalid quality";
-      httpd_resp_set_status(req, HTTPD_400);
-      httpd_resp_send(req, resp, strlen(resp));
-      return ESP_FAIL;
-    }  
-  }  
+        Serial.print("framesize set to "); Serial.println(framesize);
+        char msg[30];
+        sprintf(msg, "Framesize set to %d.\n", framesize); 
+        strcat(resp, msg);
+      } else {
+        strcat(resp, "Invalid framesize.\n");
+      }
+    }
+  }
+
+  //Check compression query
+  if (httpd_query_key_value(query, "compression", req_quality, sizeof(req_quality)) == ESP_OK) {
+    if (req_quality != "") {
+      parsed_val = atoi(req_quality);
+
+      if (parsed_val > 10 && parsed_val < 64) {
+        quality = parsed_val;
+        sensor_t * ss = esp_camera_sensor_get();
+        ss->set_quality(ss, quality); 
+        
+        Serial.print("quality set to "); Serial.println(quality);
+        char msg[30];
+        sprintf(msg, "Compression set to %d.\n", quality); 
+        strcat(resp, msg);
+      } else {
+        strcat(resp, "Invalid compression.\n");
+      }
+    }
+  }
+  
+  httpd_resp_send(req, resp, strlen(resp));
+  return ESP_OK;
 }
 
 void startCameraServer() {
@@ -1484,42 +1382,22 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
-  httpd_uri_t avilength_uri = {
-    .uri       = "/avilength",
+  httpd_uri_t config_uri = {
+    .uri       = "/config",
     .method    = HTTP_PUT_REQ,
-    .handler   = avilength_handler,
-    .user_ctx  = NULL
-  };
-
-  httpd_uri_t framesize_uri = {
-    .uri       = "/framesize",
-    .method    = HTTP_PUT_REQ,
-    .handler   = framesize_handler,
-    .user_ctx  = NULL
-  };
-
-  httpd_uri_t quality_uri = {
-    .uri       = "/quality",
-    .method    = HTTP_PUT_REQ,
-    .handler   = quality_handler,
+    .handler   = config_handler,
     .user_ctx  = NULL
   };
   
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
-    /* TODO
-     * There seems to be an 8-handler cap so for now the
-     * index handler is disabled until I can find a solution
-     */  
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &photos_uri);
-    //httpd_register_uri_handler(camera_httpd, &settings_uri);
+    httpd_register_uri_handler(camera_httpd, &settings_uri);
     
     httpd_register_uri_handler(camera_httpd, &record_uri);
-    httpd_register_uri_handler(camera_httpd, &avilength_uri);
-    httpd_register_uri_handler(camera_httpd, &framesize_uri);
-    httpd_register_uri_handler(camera_httpd, &quality_uri);
+    httpd_register_uri_handler(camera_httpd, &config_uri);
   }
 
   Serial.println("Camera http started");
