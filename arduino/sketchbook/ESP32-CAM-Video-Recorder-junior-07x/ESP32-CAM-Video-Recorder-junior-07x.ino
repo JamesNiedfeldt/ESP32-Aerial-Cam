@@ -998,21 +998,22 @@ static esp_err_t index_handler(httpd_req_t *req) {
     <h3><a href="http://%s/stream">Stream at 5 fps</a></h3>
     <h3><a href="http://%s/photos">Photos - 15 saveable photos @ 1 fps</a></h3>
     <br>
-    <input type="number" id="framesize" name="framesize" min="5" max="10">
-    <button onclick="setval('framesize')">Set framesize</button><br>
-    <input type="number" id="quality" name="quality" min="11" max="63">
-    <button onclick="setval('quality')">Set quality</button><br>
-    <input type="number" id="avilength" name="framesize" min="1" max="300">
-    <button onclick="setval('avilength')">Set avi length</button><br>
+    <input type="number" id="framesize" name="framesize" min="5" max="10"><span> Framesize</span><br>
+    <input type="number" id="compression" name="compression" min="11" max="63"><span> Compression</span><br>
+    <input type="number" id="avilength" name="framesize" min="1" max="300"><span> Video length</span><br>
+    
+    <button onclick="apply()">Apply settings</button>
     <button onclick="record()">Record</button>
     <p id="status"></p>
   </body>
 
   <script>
-    function setval(param) {
+    function apply() {
       const Http = new XMLHttpRequest();
-      Http.open("PUT", "http://%s/" + param);
-      Http.send(document.getElementById(param).value);
+      Http.open("PUT", "http://%s/config?framesize="+document.getElementById("framesize").value
+        +"&compression="+document.getElementById("compression").value
+        +"&avilength="+document.getElementById("avilength").value);
+      Http.send();
       document.getElementById("status").innerHTML = "Sending request...";
 
       Http.onreadystatechange=(e)=>{
