@@ -24,8 +24,10 @@ The following HTTP PUT requests used to configure video settings and record vide
 **Record**
 * Will set the camera to record until the set time has elapsed. Will fail if the camera is already recording.
 * URL: `/record`
-* No parameters
+* Query parameters:
+    * `indef` - optional; if `indef=1`, the camera will record indefinitely, creating files of the currently set length in seconds. If `indef` is anything besides 1, the request will fail. 
 * Example: `curl -i -X PUT "http://{IP}/record"`
+* Example: `curl -i -X PUT "http://{IP}/record?indef=1`
 
 **Configure settings**
 * Will change at least one of avi_length, framesize, and quality settings. Will fail if there are no parameters or if the camera is already recording. If any individual parameter is invalid this will be stated in the response but the request will not fail.

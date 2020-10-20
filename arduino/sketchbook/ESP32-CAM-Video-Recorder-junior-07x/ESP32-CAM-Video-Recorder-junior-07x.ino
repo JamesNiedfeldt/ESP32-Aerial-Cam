@@ -166,7 +166,8 @@ int we_are_already_stopped = 0;
 long total_delay = 0;
 long bytes_before_last_100_frames = 0;
 long time_before_last_100_frames = 0;
-int recording_ok = 0;
+int recording_ok = 0; //If true, camera is allowed to be recording and settings can't be changed
+int record_forever = 0; //If true, once recording begins camera will not stop
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -978,7 +979,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
   int use = SD_MMC.usedBytes() / (1024 * 1024);
   long rssi = WiFi.RSSI();
 
-  const char msg[] PROGMEM = R"rawliteral(<!doctype html>
+  const static char msg[] PROGMEM = R"rawliteral(<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -998,21 +999,22 @@ static esp_err_t index_handler(httpd_req_t *req) {
     <h3><a href="http://%s/stream">Stream at 5 fps</a></h3>
     <h3><a href="http://%s/photos">Photos - 15 saveable photos @ 1 fps</a></h3>
     <br>
-    <input type="number" id="framesize" name="framesize" min="5" max="10"><span> Framesize</span><br>
-    <input type="number" id="compression" name="compression" min="11" max="63"><span> Compression</span><br>
-    <input type="number" id="avilength" name="framesize" min="1" max="300"><span> Video length</span><br>
+    <input type="number" id="fs" min="5" max="10"><span> Framesize</span><br>
+    <input type="number" id="q" min="11" max="63"><span> Compression</span><br>
+    <input type="number" id="avi" min="1" max="300"><span> Video length</span><br>
     
     <button onclick="apply()">Apply settings</button>
-    <button onclick="record()">Record</button>
+    <button onclick="record(false)">Record</button>
+    <button onclick="record(true)">Record indefinitely</button>
     <p id="status"></p>
   </body>
 
   <script>
     function apply() {
       const Http = new XMLHttpRequest();
-      Http.open("PUT", "http://%s/config?framesize="+document.getElementById("framesize").value
-        +"&compression="+document.getElementById("compression").value
-        +"&avilength="+document.getElementById("avilength").value);
+      Http.open("PUT", "http://%s/config?framesize="+document.getElementById("fs").value
+        +"&compression="+document.getElementById("q").value
+        +"&avilength="+document.getElementById("avi").value);
       Http.send();
       document.getElementById("status").innerHTML = "Sending request...";
 
@@ -1026,9 +1028,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
       }
     }
 
-    function record() {
+    function record(f) {
       const Http = new XMLHttpRequest();
-      Http.open("PUT", "http://%s/record");
+      var url = "http://%s/record";
+      if(f) {url += "?indef=1";}
+      Http.open("PUT", url);
       Http.send();
 
       Http.onreadystatechange=(e)=>{
@@ -1189,7 +1193,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 static esp_err_t settings_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/plain");
   
-  char resp[200];
+  char resp[100];
   const char msg[] = "Framesize: %d\nQuality: %d\nAVI length: %d";
 
   sprintf(resp, msg, framesize, quality, avi_length);
@@ -1208,31 +1212,53 @@ static esp_err_t settings_handler(httpd_req_t *req) {
 static esp_err_t record_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/plain");
 
-  char content[2];
-  size_t recv_size = MIN(req->content_len, sizeof(content));
-  int ret = httpd_req_recv(req, content, recv_size);
-  if (ret <= 0) { //Empty request
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-      return ESP_FAIL;
-    }
+  int buffsize = 0;
+  if (httpd_req_get_url_query_len(req) > 0) {
+    buffsize = httpd_req_get_url_query_len(req) + 1;
   }
+  char query[buffsize];
     
-  if (recording_ok != 0) {
+  if (recording_ok) {
     Serial.println("Already recording.");
+    char resp[60];
+
+    if (record_forever) {
+      strcpy(resp, "Recording indefinitely. Further requests cannot be handled.");
+    } else {
+      strcpy(resp, "Already recording. Wait until finished before starting again.");
+    }
     
-    const char resp[] = "Already recording. Wait until finished before starting again.";
     httpd_resp_set_status(req, HTTPD_400);
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_FAIL;
       
   } else {
+    char resp[100];
+    
+    //Query found
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      char val[2];
+      if (httpd_query_key_value(query, "indef", val, sizeof(val)) == ESP_OK) {
+        int parsed_val = atoi(val);
+        
+        if (parsed_val == 1) {
+          record_forever = 1;
+          Serial.println("Recording indefinitely.");
+          sprintf(resp, "Recording indefinitely at %d seconds per file. Further requests cannot be handled.", avi_length);
+        } else {
+          strcpy(resp, "Unknown value for 'indef'.");
+          httpd_resp_set_status(req, HTTPD_400);
+          httpd_resp_send(req, resp, strlen(resp));
+          return ESP_FAIL;
+        }
+        
+      } 
+    } else {
+      sprintf(resp, "Recording %d seconds.", avi_length);
+    }
+    
     recording_ok = 1;
-
-    Serial.println("Recording permitted.");
-      
-    char resp[50];
-    sprintf(resp, "Recording %d seconds.", avi_length);
+    Serial.println("Recording started.");    
     httpd_resp_send(req, resp, strlen(resp));
     return ESP_OK;
   }  
@@ -1264,7 +1290,7 @@ static esp_err_t config_handler(httpd_req_t *req) {
   }
 
   //Currently recording, can't process changes
-  if (recording_ok != 0) { 
+  if (recording_ok) { 
     Serial.println("Configuring settings not permitted while recording.");
     
     strcat(resp, "Already recording. Wait until finished before modifying settings.");
@@ -1545,7 +1571,9 @@ void loop() {
       Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.1f fps...\n", millis(), frames, avi_end_time, avi_end_time - avi_start_time, fps);
 
       frames = 0;             // start recording again on the next loop
-      recording_ok = 0;       // Don't allow recording until told to again
+      if (!record_forever) {
+        recording_ok = 0;       // Don't allow recording until told to again 
+      }
 
     } else {  // another frame of the avi
 
